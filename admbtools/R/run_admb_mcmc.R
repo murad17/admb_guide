@@ -34,6 +34,14 @@
 #' Which value to use in the probing algorithm. The default NULL value
 #' disables this feature. See the vignette for more information on this
 #' algorithm and how to best use it.
+#' @param hyrbid (Logical) Whether to use the Hamiltonial (hybrid)
+#' algorithm. Default is FALSE.
+#' @param hyeps (Numeric) The size of the leapfrog jump in the hybrid
+#' method, with smaller values leading to smaller but more accurate
+#' jumps. Must be a positive value.
+#' @param hynstep (Integer) The approximate number of steps used in the
+#' leapfrog step of the hybrid algorithm. Steps are randomly generated for
+#' each MCMC iteration, centered around \code{hynstep}.
 #' @param verbose (Logical) Whether to print ADMB warnings and other
 #' information. Useful for testing and troubleshooting.
 #' @param extra.args (Character) A string which is passed to ADMB at
@@ -43,35 +51,31 @@
 #' object of class 'admb', read in using the results read in using
 #' \code{read_admb}, and (3) some MCMC convergence diagnostics using CODA.
 run_admb_mcmc <- function(model.path, model.name, Nout, mcsave, burn.in,
-                     cov.user=NULL, init.pin=NULL, se.scale=NULL,
-                     mcscale=FALSE,  mcseed=NULL, mcrb=NULL, mcdiag=FALSE,
-                     mcprobe=NULL, verbose=TRUE, extra.args=NULL,
-                     hybrid=FALSE, hyeps=NULL, hynstep=NULL){
+                          cov.user=NULL, init.pin=NULL, se.scale=NULL,
+                          mcscale=FALSE,  mcseed=NULL, mcrb=NULL, mcdiag=FALSE,
+                          mcprobe=NULL, verbose=TRUE, extra.args=NULL,
+                          hybrid=FALSE, hyeps=NULL, hynstep=NULL){
     ## This function runs an ADMB model MCMC, burns and thins, calculates
     ## effective sizes, and returns stuff depending on verbose.
     ## browser()
     iterations <- (Nout+burn.in)*mcsave
     if(verbose) print(paste("Run started at", round(Sys.time())))
     if(iterations <1) stop(paste0("Iterations too low: ", iterations))
-    if(!is.null(model.path)) {
-        wd.old <- getwd(); on.exit(setwd(wd.old))
-        setwd(model.path)
-    }
+    wd.old <- getwd(); on.exit(setwd(wd.old))
+    setwd(model.path)
     ## Run to get MLE and covariance matrix
     system(model.name, ignore.stdout=T)
     ## Grab original admb fit and metrics
     mle <- read_admb(model.name)
     ## If user provided covar matrix, write it to file and save to results
     if(!is.null(cov.user)){
-        cor <- cov.user/ sqrt(diag(cov.user) %o% diag(cov.user))
-        if(!is.positive.definite(x=cor))
+        cor.user <- cov.user/ sqrt(diag(cov.user) %o% diag(cov.user))
+        if(!is.positive.definite(x=cor.user))
             stop("Invalid cov.user matrix, not positive definite")
         write.admb.cov(cov.user)
-        mle$cor.user <- cor
-    }
+        mle$cov.user <- cov.user
+    } else {
     ## otherwise use the estimated one
-    else {
-        cor <- with(mle, cor[1:npar, 1:npar])
         mle$cov.user <-  NULL
     }
     ## Write the starting values to file. Always using a init.pin file b/c
@@ -82,21 +86,27 @@ run_admb_mcmc <- function(model.path, model.name, Nout, mcsave, burn.in,
     if(is.null(init.pin)) init.pin <- mle$coefficients[1:mle$npar]
     write.table(file="init.pin", x=init.pin, row.names=F, col.names=F)
     ## Separate the options by algorithm, first doing the shared arguments
-    cmd <- paste(model.name,"-mcmc",iterations, "-nohess -noest")
+    cmd <- paste(model.name,"-mcmc",iterations)
+    ## If user written one, make sure not to overwrite it
+    if(!is.null(cov.user)) cmd <- paste(cmd, "-nohess")
     cmd <- paste(cmd, "-mcpin init.pin")
     if(!is.null(extra.args)) cmd <- paste(cmd, extra.args)
     if(!is.null(mcseed)) cmd <- paste(cmd, "-mcseed", mcseed)
-    cmd <- paste(cmd, "-mcsave",mcsave)
+    if(mcdiag==TRUE) cmd <- paste(cmd, "-mcdiag")
+    if(!is.null(mcrb)) cmd <- paste(cmd, "-mcrb",mcrb)
     ## Those options for the standard MH algorithm
     if(!hybrid){
-    if(mcscale==FALSE) cmd <- paste(cmd, "-mcnoscale")
-    if(!is.null(mcrb)) cmd <- paste(cmd, "-mcrb",mcrb)
-    if(!is.null(mcprobe)) cmd <- paste(cmd, "-mcprobe",mcprobe)
-    if(mcdiag==TRUE) cmd <- paste(cmd, "-mcdiag")
-} else {
-    ## The hybrid options
-    cmd <- paste(cmd, "-hybrid -hyeps",hyeps,"-hynstep",hynstep)
-}
+        cmd <- paste(cmd, "-mcsave",mcsave)
+        if(mcscale==FALSE) cmd <- paste(cmd, "-mcnoscale")
+        if(!is.null(mcprobe)) cmd <- paste(cmd, "-mcprobe",mcprobe)
+    } else {
+        ## The hybrid options
+        if(mcsave!=1)
+            stop("mcsave option is incompatible with the hybrid algorithm (fixed at 1 internally)")
+        if(hyeps<=0) stop("hyeps must be positive number")
+        if(hynstep<=0) stop("hynstep must be positive integer")
+        cmd <- paste(cmd, "-hybrid -hyeps",hyeps,"-hynstep",hynstep)
+    }
     ## The command is constructed.
     if(verbose) print(cmd)
     ## Scale the covariance matrix
@@ -113,6 +123,18 @@ run_admb_mcmc <- function(model.path, model.name, Nout, mcsave, burn.in,
     if(!is.null(mle)){
         names(mcmc) <- names(with(mle, coefficients[1:npar]))
     }
+    ## If mcrb is used, read  that in for plotting. It's in the corrtest file.
+    if(!is.null(mcrb)){
+        L <- readLines('corrtest')
+        st <- grep("modified S", L)[1]+1
+        en <- grep("S* modified S", L)-1
+        L <- gsub("^\\s+|\\s+$", "", L[st:en])
+        cov.mcrb <- do.call(rbind, lapply(strsplit(L, " "), as.numeric))
+        cor.mcrb <- cov.mcrb/(sqrt(diag(cov.mcrb) %o% diag(cov.mcrb)))
+        if(!is.positive.definite(cor.mcrb))
+            warning("the modified mcrb covariance matrix read in was not positive definite")
+        else mle$cov.user <- cov.mcrb
+    }
     ## Remove the 'burn in' specified by user
     if(burn.in>0) mcmc <- mcmc[-(1:burn.in),]
     ## Run effective sample size calcs from CODA, metric of convergence
@@ -123,3 +145,5 @@ run_admb_mcmc <- function(model.path, model.name, Nout, mcsave, burn.in,
     class(results) <- 'admb_mcmc'
     return(results)
 }
+
+

@@ -40,7 +40,7 @@ pairs_admb <- function(admb_mcmc, diag=c("acf","hist", "trace"),
             ## plots
             min.temp <- min(posterior[,i], limit.temp[1])
             max.temp <- max(posterior[,i], limit.temp[2])
-            margin <- .5*(max.temp-min.temp)
+            margin <- .15*(max.temp-min.temp)
             limits[[i]] <- c(min.temp-margin, max.temp+margin)
         }
     }
@@ -70,15 +70,15 @@ pairs_admb <- function(admb_mcmc, diag=c("acf","hist", "trace"),
                     temp.box()
                 } else if(diag=="acf") {
                     acf(posterior[,row], axes=F, ann=F, ylim=acf.ylim)
-                    legend("topright", bty='n', legend=NA,
-                           title=sprintf("EFS=%.3f", 100*admb_mcmc$diag$efsize[row],2))
+                    ## legend("topright", bty='n', legend=NA,
+                    ##        title=sprintf("EFS=%.3f", 100*admb_mcmc$diag$efsize[row],2))
                     temp.box()
                 } else if(diag=="trace") {
                     plot(x=posterior[,row], lwd=.5, col=gray(.5), type="l", axes=F,
                          ann=F, ylim=limits[[row]])
                     temp.box()
                 }
-                legend("top", bty='n', legend=NA, title=posterior.names[row], ...)
+                mtext(posterior.names[row], line=-2)
             }
             ## If lower triangle add scatterplot
             if(row>col){
@@ -87,20 +87,24 @@ pairs_admb <- function(admb_mcmc, diag=c("acf","hist", "trace"),
                      pch=ifelse(NROW(posterior)>=5000,".", 1), col=1,
                      xlim=limits[[col]], ylim=limits[[row]])
                 ## Add bivariate 95% normal levels for both the MLE
-                ## estimated covariance, but also the user supplied cor.user
+                ## estimated covariance, but also the user supplied cov.user
                 points(x=mle$coefficients[col], y=mle$coefficients[row],
                        pch=16, cex=1, col=2)
                 ## Get points of a bivariate normal 95% confidence contour
                 ellipse.temp <- ellipse::ellipse(x=mle$cor[col, row],
-                                       scale=mle$se[1:mle$npar],
+                                       scale=mle$se[1:mle$npar][c(col, row)],
                                        centre= mle$coefficients[c(col, row)], npoints=1000,
                                        level=.95)
                 lines(ellipse.temp , lwd=1.5, lty=1, col="red")
-                if(!is.null(mle$cor.user))
-                    lines(ellipse::ellipse(x=mle$cor.user[col, row],
-                                           scale=mle$se[1:mle$npar],
-                                           centre= mle$coefficient[c(col, row)], npoints=1000,
-                                           level=.95) , lwd=1.5, lty=1, col="blue")
+                if(!is.null(mle$cov.user)){
+                    se.user <- sqrt(diag(mle$cov.user))
+                    cor.user <- mle$cov.user/(se.user %o% se.user)
+                    lines(ellipse::ellipse(
+                        x=cor.user[col, row],
+                        scale=se.user[c(col, row)],
+                        centre= mle$coefficient[c(col, row)], npoints=1000,
+                        level=.95) , lwd=1.5, lty=1, col="blue")
+                }
                 par(xaxs="i", yaxs="i")
                 temp.box()
             }
@@ -112,7 +116,7 @@ pairs_admb <- function(admb_mcmc, diag=c("acf","hist", "trace"),
                 ## visible, but still a function of correlation. This
                 ## might need to be dynamic with n.
                 legend("center", legend=NA, title=temp.cor,
-                       cex=(3*abs(temp.cor)+.5)*.9, bty='n')
+                       cex=(3*abs(temp.cor)+.25)*.5, bty='n')
                 ## text(.5,.5, labels=temp.cor, cex=(3*abs(temp.cor)+.5)*.9,
                 ##      col=1)
                 temp.box()
@@ -126,6 +130,11 @@ pairs_admb <- function(admb_mcmc, diag=c("acf","hist", "trace"),
                 par( mgp=c(.05, ifelse(row %% 2 ==1, .15, .65),0) )
                 axis(2, col=axis.col, lwd=.5)
             }
+            if(col==1 & row ==1){
+                par( mgp=c(.05, ifelse(row %% 2 ==1, .15, .65),0) )
+                axis(2, col=axis.col, lwd=.5)
+            }
+
         }
     }
 }
